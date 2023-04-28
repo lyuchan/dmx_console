@@ -1,5 +1,14 @@
 #include <RotaryEncoder.h>
 #include <EEPROM.h>
+#include <Arduino.h>
+
+#include <esp_dmx.h>
+int transmitPin = 17;
+int receivePin = 16;
+int enablePin = 21;
+dmx_port_t dmxPort = 1;
+byte dmx_send_data[DMX_PACKET_SIZE];
+uint8_t dmx_console[DMX_PACKET_SIZE] = { 0 };
 
 #define PIN_IN1 23
 #define PIN_IN2 22
@@ -9,29 +18,45 @@
 
 #define ROTARYMIN 0
 int ROTARYMAX = 100;
-int Amax = 255;
-int dmx_console[512] = { 0 };
+
 RotaryEncoder encoder(PIN_IN1, PIN_IN2, RotaryEncoder::LatchMode::TWO03);
 RotaryEncoder encoderA(PIN_AIN1, PIN_AIN2, RotaryEncoder::LatchMode::TWO03);
+TaskHandle_t Task1;
 int page = 0, pos = 0, oldpos = -1, pos2 = 0;
 int ch = 0;
-int oldpos2 = 0;
+int oldpos2 = 0, Amax = 0;
+;
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
   EEPROM.begin(1024);
+  //dmx.initWrite(TOTAL_CHANNELS);
+  //dmx.init(512);
+  dmx_set_pin(dmxPort, transmitPin, receivePin, enablePin);
+  dmx_driver_install(dmxPort, DMX_DEFAULT_INTR_FLAGS);
+
   pinMode(18, INPUT_PULLUP);
   recallsd();
-  end();
+  end_screen();
   delay(1000);
   topage(0);
   delay(2000);
   topage(1);
   setqpicc(0, 2);
   setqpicc(1, 1);
+
+  xTaskCreatePinnedToCore(
+    loop2,          // name of the task function
+    "buttonCheck",  // name of the task
+    10000,          // memory assigned for the task
+    NULL,           // parameter to pass if any
+    1,              // priority of task, starting from 0(Highestpriority) *IMPORTANT*( if set to 1 and there is no activity in your 2nd loop, it will reset the esp32)
+    &Task1,         // Reference name of taskHandle variable
+    1);             // choose core (0 or 1)
 }
 
 void loop() {
+  //loop2();
   encoder.tick();
   encoderA.tick();
   pos = encoder_loop();
@@ -97,7 +122,7 @@ void loop() {
         encoder.setPosition(0);
         encoderA.setPosition(ch);
         setnum(0, ch + 1);
-        setnum(1, dmx_console[ch]);
+        setnum(1, dmx_console[ch+1]);
         setqpicc(0, 11);
         setqpicc(1, 10);
         setqpicc(2, 10);
@@ -202,7 +227,7 @@ void loop() {
         setqpicc(2, 10);
         setqpicc(3, 10);
       } else if (pos == 1) {
-        encoderA.setPosition(dmx_console[ch]);
+        encoderA.setPosition(dmx_console[ch+1]);
         setqpicc(0, 10);
         setqpicc(1, 11);
         setqpicc(2, 10);
@@ -229,10 +254,10 @@ void loop() {
       if (pos == 0) {
         ch = pos2;
         setnum(0, ch + 1);
-        setnum(1, dmx_console[ch]);
+        setnum(1, dmx_console[ch+1]);
       } else if (pos == 1) {
-        dmx_console[ch] = pos2;
-        setnum(1, dmx_console[ch]);
+        dmx_console[ch+1] = pos2;
+        setnum(1, dmx_console[ch+1]);
       }
     }
     if (digitalRead(18) == LOW) {  //sw
@@ -248,10 +273,10 @@ void loop() {
         encoder.setPosition(0);
       }
       if (pos == 3) {
-       // encoder.setPosition(0);
-       // encoderA.setPosition(0);
+        // encoder.setPosition(0);
+        // encoderA.setPosition(0);
         for (int j = 0; j < 512; j++) {
-          dmx_console[j] = 0;
+          dmx_console[j+1] = 0;
         }
       }
     }
@@ -260,13 +285,23 @@ void loop() {
 
   // put your main code here, to run repeatedly:
 }
+
+void loop2(void* parameter) {  //void* parameter
+  for (;;) {
+    dmx_write(dmxPort, dmx_console, DMX_PACKET_SIZE);
+    dmx_send(dmxPort, DMX_PACKET_SIZE);
+    dmx_wait_sent(dmxPort, DMX_TIMEOUT_TICK);
+    //dmx.update();
+    //delay(1);
+  }
+}
 void wifiset() {
 }
 void savesd() {
-  saveIntArrayToEEPROM(0, dmx_console, 512);
+  saveIntArrayToEEPROM(0, dmx_console, 513);
 }
 void recallsd() {
-  loadIntArrayFromEEPROM(0, dmx_console, 512);
+  loadIntArrayFromEEPROM(0, dmx_console, 513);
 }
 
 int encoder_loop() {
@@ -295,42 +330,42 @@ int encoderA_loop() {
   }  // if
   return newPos;
 }
-void end() {
+void end_screen() {
   Serial.print("\xff\xff\xff");
 }
 void topage(int p) {
   Serial.print("page " + String(p));
-  end();
+  end_screen();
 }
 void setqpicc(int q, int pic) {
   Serial.print("q" + String(q) + ".picc=" + String(pic));
-  end();
+  end_screen();
 }
 void setnum(int n, int val) {
   Serial.print("n" + String(n) + ".val=" + String(val));
-  end();
+  end_screen();
 }
 //eeprom
-void writeIntToEEPROM(int address, int value) {
-  EEPROM.write(address, (value >> 8) & 0xFF);
-  EEPROM.write(address + 1, value & 0xFF);
+void writeIntToEEPROM(int address, uint8_t value) {
+  // EEPROM.write(address, (value >> 8) & 0xFF);
+  EEPROM.write(address, value);
 }
 
-int readIntFromEEPROM(int address) {
-  int highByte = EEPROM.read(address);
-  int lowByte = EEPROM.read(address + 1);
-  return (highByte << 8) | lowByte;
+uint8_t readIntFromEEPROM(int address) {
+  uint8_t highByte = EEPROM.read(address);
+  // int lowByte = EEPROM.read(address + 1);
+  return highByte;  //(highByte << 8) | lowByte;
 }
 
-void saveIntArrayToEEPROM(int startingAddress, int* intArray, int arrayLength) {
+void saveIntArrayToEEPROM(int startingAddress, uint8_t* intArray, int arrayLength) {
   for (int i = 0; i < arrayLength; i++) {
-    writeIntToEEPROM(startingAddress + i * 2, intArray[i]);
+    writeIntToEEPROM(startingAddress + i, intArray[i]);
   }
-   EEPROM.commit();
+  EEPROM.commit();
 }
 
-void loadIntArrayFromEEPROM(int startingAddress, int* intArray, int arrayLength) {
+void loadIntArrayFromEEPROM(int startingAddress, uint8_t* intArray, int arrayLength) {
   for (int i = 0; i < arrayLength; i++) {
-    intArray[i] = readIntFromEEPROM(startingAddress + i * 2);
+    intArray[i] = readIntFromEEPROM(startingAddress + i);
   }
 }
